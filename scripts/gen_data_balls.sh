@@ -4,4 +4,4 @@ if [ ! -d scripts ]; then
   exit 0
 fi
 
-python scripts/dataset_balls/gen.py --output-dir './data'
+python scripts/dataset_balls/gen.py --output-dir '/mnt/data/shubham/obj3d'
