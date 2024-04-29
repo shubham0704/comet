@@ -14,7 +14,7 @@ def main():
     parser.add_argument("--nstates", type=int, help="The number of latent dimension states")
     parser.add_argument("--ncom", type=int, help="The number of coms")
     parser.add_argument("--seed", type=int, default=123, help="Random seed")
-    parser.add_argument("--max_epochs", type=int, default=20000, help="Maximum number of epochs of training")
+    parser.add_argument("--max_epochs", type=int, default=500, help="Maximum number of epochs of training")
     parser.add_argument("--ndset", type=int, default=100, help="Number of simulations to be generated")
     parser.add_argument("--tmax", type=float, default=10.0, help="Max sim time for training")
     parser.add_argument("--dt", type=float, default=0.01, help="The dt to capture the speed")
@@ -69,7 +69,7 @@ def main():
     val_dloader = torch.utils.data.DataLoader(val_dset, shuffle=False, batch_size=batch_size)
     logger = pl.loggers.tensorboard.TensorBoardLogger("lightning_logs", name="", version=args.version)
     model_chkpt = pl.callbacks.ModelCheckpoint(monitor="val_loss")
-    trainer = pl.Trainer(max_epochs=max_epochs, gpus=1, logger=logger, callbacks=[model_chkpt])
+    trainer = pl.Trainer(max_epochs=max_epochs, logger=logger, callbacks=[model_chkpt])
     trainer.fit(module, train_dloader, val_dloader)
 
 if __name__ == "__main__":
