@@ -5,6 +5,62 @@ import scipy.integrate
 import torch
 import functorch
 import pytorch_lightning as pl
+import pdb
+import torch.nn as nn
+from vit_pytorch import ViT
+from einops import rearrange
+
+class VisionTransformerEncoder(nn.Module):
+    def __init__(self, image_size, patch_size, num_classes, dim, depth, heads, mlp_dim, latent_dim, channels=3):
+        super(VisionTransformerEncoder, self).__init__()
+        num_patches = (image_size // patch_size) ** 2
+        self.patch_dim = channels * patch_size ** 2
+
+        self.vit = ViT(
+            image_size=image_size,
+            patch_size=patch_size,
+            num_classes=num_classes,
+            dim=dim,
+            depth=depth,
+            heads=heads,
+            mlp_dim=mlp_dim,
+            channels=channels
+        )
+
+        self.fc_mu = nn.Linear(dim, latent_dim)
+        self.fc_logvar = nn.Linear(dim, latent_dim)
+
+    def forward(self, x):
+        x = self.vit(x)
+        mu = self.fc_mu(x)
+        logvar = self.fc_logvar(x)
+        return mu, logvar
+    
+class VisionTransformerDecoder(nn.Module):
+    def __init__(self, image_size, patch_size, num_classes, dim, depth, heads, mlp_dim, latent_dim, channels=3):
+        super(VisionTransformerDecoder, self).__init__()
+        self.num_patches = (image_size // patch_size) ** 2
+        self.patch_dim = channels * patch_size ** 2
+
+        self.fc = nn.Linear(latent_dim, dim)
+
+        self.vit = ViT(
+            image_size=image_size,
+            patch_size=patch_size,
+            num_classes=self.patch_dim,
+            dim=dim,
+            depth=depth,
+            heads=heads,
+            mlp_dim=mlp_dim,
+            channels=channels
+        )
+
+    def forward(self, z):
+        x = self.fc(z)
+        x = rearrange(x, 'b (h w) c -> b c h w', h=int(self.num_patches ** 0.5))
+        x = self.vit(x)
+        x = rearrange(x, 'b c h w -> b (h w) c')
+        return x
 
 
 class MLP2(torch.nn.Module):
@@ -32,7 +88,7 @@ class Reshape(torch.nn.Module):
         self._nlast_dim = nlast_dim
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = x.reshape(*x.shape[:-self._nlast_dim], *self._data_shape)
+        x = x.reshape(*x.shape[:-self._nlast_dim], *self._data_shape)        
         return x
 
 class BaseMethod(torch.nn.Module):
@@ -157,8 +213,30 @@ class VAE(pl.LightningModule):
     def __init__(self, data_shape: Tuple[int, int, int], method: BaseMethod, nlatent_dim: int, dt: float, nhidden: int = 250):
         super().__init__()
         self._dshape = (2 * data_shape[0], data_shape[1], data_shape[2])  # the channels are concatted for subsequent frames
-        self._enc = torch.nn.Sequential(Reshape((-1,), 3), MLP2(np.prod(self._dshape), nlatent_dim))
-        self._dec = torch.nn.Sequential(MLP2(nlatent_dim, np.prod(self._dshape)), Reshape(self._dshape, 1))
+        # self._enc = torch.nn.Sequential(Reshape((-1,), 3), MLP2(np.prod(self._dshape), nlatent_dim))
+        # self._dec = torch.nn.Sequential(MLP2(nlatent_dim, np.prod(self._dshape)), Reshape(self._dshape, 1))
+        self._enc = VisionTransformerEncoder(
+            image_size=data_shape[-1],
+            patch_size=16,
+            num_classes=1000,
+            dim=768,
+            depth=12,
+            heads=12,
+            mlp_dim=3072,
+            latent_dim=nlatent_dim,
+            channels=data_shape[0]
+        )
+        self._dec = VisionTransformerDecoder(
+            image_size=data_shape[-1],
+            patch_size=16,
+            num_classes=1000,
+            dim=768,
+            depth=12,
+            heads=12,
+            mlp_dim=3072,
+            latent_dim=nlatent_dim,
+            channels=data_shape[0]
+        )  
         self._method = method
         self._dt = dt
         self._nlatent_dim = nlatent_dim
@@ -169,15 +247,21 @@ class VAE(pl.LightningModule):
         return torch.optim.Adam(self.parameters(), lr=3e-4)
 
     def preprocess(self, frames: torch.Tensor) -> torch.Tensor:
+        """
+        frames shape torch.Size([256, 2, 2, 30, 30])
+        frame0 shape torch.Size([256, 2, 30, 30])
+        """
         assert frames.size(-4) == 2
-
+        # print('frames shape', frames.shape)
         frame0 = frames[..., 0, :, :, :]
         frame1 = frames[..., 1, :, :, :]
+        # print('frame0 shape', frame0.shape)
         dframe = (frame1 - frame0) / self._dt  # (..., nchannels, height, width)
         if torch.all(self._max_dframe < 0):
             self._max_dframe = dframe.abs().max().detach()
         dframe = dframe / self._max_dframe
         fdframe = torch.cat((frame0, dframe), dim=-3)  # (..., 2 * nchannels, height, width)
+        # print('fdframe:', fdframe.shape)
         return fdframe
 
     def encode(self, frames: torch.Tensor) -> torch.Tensor:
@@ -201,8 +285,13 @@ class VAE(pl.LightningModule):
     def calc_loss(self, batch: Tuple[torch.Tensor]):
         # returns the dynamics and the com
         # imgs: (batch_size, 3, nchannels, height, width)
-        imgs, = batch
-
+        if type(batch) == tuple:
+            imgs, = batch
+        else:
+            imgs = batch
+        # print("images_shape:", len(imgs))
+        # print("imgs shape", imgs.shape)
+        # print("image", imgs[0].shape)
         # frames: (batch_size, 2, nchannels, height, width)
         frames = imgs[..., :2, :, :, :]
         next_frames = imgs[..., 1:, :, :, :]
